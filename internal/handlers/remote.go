@@ -40,6 +40,14 @@ type supportResult struct {
 // directExtensions lists video file extensions supported for direct URLs.
 var directExtensions = []string{"m3u8", "mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "ts", "m4v", "3gp", "mpg", "mpeg"}
 
+// ephemeralPlaylist = source ที่ลิงก์ m3u8 มี token หมดอายุเร็ว — ไม่เก็บ
+// ลง metadata.playlist ให้ worker scrape สดตอนโหลด (จาก metadata.source)
+var ephemeralPlaylist = map[string]bool{
+	"pornhub":  true,
+	"xvideos":  true,
+	"upload18": true,
+}
+
 // SOURCES registry — matches platform support.ts
 var sources = []sourceDefinition{
 	{
@@ -494,8 +502,10 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 		SourceType: &support.Type,
 	}
 
-	// Set playlist for missav/pornhub/xvideos
-	if scraped.M3u8URL != "" {
+	// เก็บ playlist เฉพาะ source ที่ลิงก์ "อยู่ทน" (เช่น missav)
+	// — pornhub/xvideos/upload18 ลิงก์ m3u8 มี token หมดอายุเร็ว ไม่เก็บ
+	//   worker-download จะ scrape สดจาก metadata.source ตอนจะโหลดจริง
+	if scraped.M3u8URL != "" && !ephemeralPlaylist[support.Type] {
 		newFile.Metadata.Playlist = &scraped.M3u8URL
 	}
 
