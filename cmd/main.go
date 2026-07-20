@@ -38,6 +38,7 @@ func main() {
 	registry.Register(parsers.NewMissAVParser())
 	registry.Register(parsers.NewXVideosParser())
 	registry.Register(parsers.NewPornHubParser())
+	registry.Register(parsers.NewUpload18Parser())
 	registry.Register(parsers.NewDirectParser()) // catch-all: must be last
 
 	// Get port from config

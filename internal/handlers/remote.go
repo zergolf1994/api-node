@@ -105,6 +105,15 @@ var sources = []sourceDefinition{
 		},
 	},
 	{
+		Enabled: true,
+		Type:    "upload18",
+		Domains: []string{"upload18.org", "upload18.cc", "upload18.com"},
+		Extract: func(u *url.URL, _ string) string {
+			// canonical: หน้าเล่นตาม path เดิม (ไม่มี query/hash)
+			return u.Scheme + "://" + u.Host + u.Path
+		},
+	},
+	{
 		Enabled:    true,
 		Type:       "direct",
 		Domains:    []string{"*"},
@@ -244,7 +253,7 @@ func (h *Handler) scrapeSource(sourceType, source string) (*ScrapedData, error) 
 	switch sourceType {
 	case "gdrive":
 		parserURL = "https://drive.google.com/file/d/" + source + "/view"
-	case "missav", "xvideos", "pornhub":
+	case "missav", "xvideos", "pornhub", "upload18":
 		parserURL = source
 	case "direct":
 		parserURL = source
@@ -524,7 +533,7 @@ func resolveFileName(sourceType string, scraped *ScrapedData, sourceFile *models
 			if scraped.Title != "" {
 				return scraped.Title
 			}
-		case "gdrive", "pornhub", "xvideos":
+		case "gdrive", "pornhub", "xvideos", "upload18":
 			if scraped.Title != "" {
 				return scraped.Title
 			}
