@@ -16,6 +16,7 @@ import (
 	"api-node/internal/db/models"
 	"api-node/internal/scraper"
 	"api-node/internal/services"
+	"api-node/internal/utils"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -388,6 +389,12 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 	creatorID := apiKey.GetCreatorID()
 	spaceID := apiKey.SpaceID
 	log.Printf("📥 Remote: type=%s source=%s creator=%s space=%s", support.Type, support.Source, creatorID, spaceID)
+
+	// กัน race: request source เดียวกัน (space+source+type) วิ่งเรียงกัน —
+	// ไม่งั้น 2 request พร้อมกันต่างเช็ค dup ไม่เจอ แล้วต่างสร้างไฟล์ซ้ำ
+	// (in-process lock — พอสำหรับ WordPress ยิงเข้าเครื่องเดียว)
+	lock := utils.AcquireProcessingLock("remote:" + spaceID + "|" + support.Type + "|" + support.Source)
+	defer lock.Release()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
