@@ -19,6 +19,11 @@ type Config struct {
 	StorageId   string
 	StoragePath string
 	ScraperURL  string
+	AblyAPIKey  string
+
+	// remote import: บล็อก source ที่ fail เกิน threshold แบบ cooldown
+	RemoteFailThreshold int // fail กี่ครั้งถึงบล็อก (default 3)
+	RemoteBlockHours    int // บล็อกนานกี่ชั่วโมง (default 24)
 }
 
 // Load reads configuration from environment variables (and .env file).
@@ -42,6 +47,10 @@ func Load() {
 		StorageId:   getEnv("STORAGE_ID", ""),
 		StoragePath: getEnv("STORAGE_PATH", "./files"),
 		ScraperURL:  getEnv("SCRAPER_URL", ""),
+		AblyAPIKey:  getEnv("ABLY_API_KEY", ""),
+
+		RemoteFailThreshold: getEnvInt("REMOTE_FAIL_THRESHOLD", 3),
+		RemoteBlockHours:    getEnvInt("REMOTE_BLOCK_HOURS", 24),
 	}
 }
 

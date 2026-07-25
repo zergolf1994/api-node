@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"api-node/internal/db/models"
+	"api-node/internal/realtime"
 	"api-node/internal/scraper"
 	"api-node/internal/services"
 	"api-node/internal/utils"
@@ -413,6 +414,7 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 	var existingFile models.File
 	err = fileCol.FindOne(ctx, duplicateFilter).Decode(&existingFile)
 	if err == nil {
+		clearSourceFailure(ctx, support.Source) // มีไฟล์อยู่แล้ว = source ใช้ได้ ล้าง block เก่า
 		log.Printf("✅ Duplicate found: slug=%s name=%s", existingFile.Slug, existingFile.Name)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
@@ -420,6 +422,13 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 			"slug":    existingFile.Slug,
 			"title":   existingFile.Name,
 		})
+		return
+	}
+
+	// 4.5 Block check — source ที่ fail เกิน threshold → ปฏิเสธก่อน scrape/create
+	if isSourceBlocked(ctx, support.Source) {
+		log.Printf("🚫 Blocked source (too many failures): %s", support.Source)
+		respondRemoteError(w, "url_blocked", http.StatusTooManyRequests)
 		return
 	}
 
@@ -432,6 +441,7 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 
 	// 5.5 Accessible check
 	if scraped != nil && !scraped.Accessible {
+		recordSourceFailure(ctx, support.Source, support.Type, "url not accessible")
 		log.Printf("❌ URL not accessible: %s", support.Source)
 		respondRemoteError(w, "URL is not accessible", http.StatusUnprocessableEntity)
 		return
@@ -456,7 +466,9 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 		if cloneErr != nil {
 			log.Printf("⚠️ Clone failed: %v — falling through to create", cloneErr)
 		} else if result != nil {
+			clearSourceFailure(ctx, support.Source) // สำเร็จ → ล้าง block เก่า
 			log.Printf("✅ Cloned: %s → slug=%s name=%s", sourceFile.ID, result.Slug, result.Name)
+			publishRemoteFileEvent(spaceID, result.Name) // ไฟล์ใหม่ใน space → แจ้ง
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": true,
 				"msg":     "cloned",
@@ -470,6 +482,11 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 
 	// 7. Scrape ล้มเหลวและไม่มี file ให้ clone → error
 	if scrapeErr != nil || scraped == nil {
+		msg := "scrape returned no data"
+		if scrapeErr != nil {
+			msg = scrapeErr.Error()
+		}
+		recordSourceFailure(ctx, support.Source, support.Type, msg)
 		respondRemoteError(w, "Failed to scrape source", http.StatusInternalServerError)
 		return
 	}
@@ -478,6 +495,7 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 	var raceCheck models.File
 	err = fileCol.FindOne(ctx, duplicateFilter).Decode(&raceCheck)
 	if err == nil {
+		clearSourceFailure(ctx, support.Source)
 		log.Printf("✅ Race condition caught: slug=%s name=%s", raceCheck.Slug, raceCheck.Name)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
@@ -524,12 +542,37 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("✅ Created: slug=%s name=%s", newFile.Slug, newFile.Name)
+	clearSourceFailure(ctx, support.Source) // สำเร็จ → ล้าง block เก่า
+	publishRemoteFileEvent(spaceID, newFile.Name) // ไฟล์ใหม่ → แจ้ง space
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"msg":     "remoted",
 		"slug":    newFile.Slug,
 		"title":   newFile.Name,
 	})
+}
+
+// publishRemoteFileEvent แจ้ง space ว่ามีไฟล์ใหม่จาก remote import
+// resolve slug จาก spaceID แล้วยิง Ably — fire-and-forget ไม่ block
+//
+// remote ลงที่ root เสมอ → ส่ง folderSlug=null (targeted) ไม่ใช่ broadcast
+// เพื่อให้เฉพาะคนที่ดู root รีเฟรช ส่วนคนที่อยู่ในโฟลเดอร์อื่นไม่ถูกรบกวน
+// ไม่ส่ง userId (import ผ่าน API key ไม่มี browser actor → ทุกคนที่ดู root รี)
+func publishRemoteFileEvent(spaceID, fileName string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var ws models.Workspace
+		if err := models.WorkspaceModel.Col().FindOne(ctx, bson.M{"_id": spaceID}).Decode(&ws); err != nil {
+			return
+		}
+		realtime.PublishSpaceEvent(ws.Slug, realtime.EventFileUploaded, map[string]any{
+			"fileName": fileName,
+			"action":   "remote",
+			"views":    []string{"root"}, // remote ลง root → รีเฉพาะคนดู root
+		})
+	}()
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────

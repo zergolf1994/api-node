@@ -10,6 +10,8 @@ VDOHide API server สำหรับ Remote file management, web scraping, แ�
 - **Google Drive** — ดึง metadata ผ่าน OAuth2 API v3
 - **Anti-Bot** — fallback ไปใช้ Headless Chrome (go-rod + stealth) เมื่อโดน 403
 - **CORS** — รองรับ cross-origin requests
+- **Remote block** — source URL ที่ import fail เกิน N ครั้ง → บล็อกชั่วคราว (cooldown) กันยิงซ้ำ
+- **Realtime** — publish event ไป Ably (`space:{slug}` / `file:uploaded`) เมื่อสร้างไฟล์ใหม่ → สมาชิกที่ดู space รีเฟรชอัตโนมัติ (optional, ตั้ง `ABLY_API_KEY`)
 
 ### Supported Sources
 
@@ -42,6 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/zergolf1994/api-node/main/install.s
 |---|---|---|
 | `-p, --port` | `8081` | HTTP port |
 | `--mongodb-uri` | `""` | MongoDB connection string |
+| `--ably-api-key` | `""` | Ably API key สำหรับ realtime (optional — ไม่ใส่ = ปิด) |
 | `--uninstall` | — | ถอนการติดตั้ง |
 
 ### Examples
@@ -169,6 +172,15 @@ HTTP_TIMEOUT=30
 
 # MongoDB URI (required)
 MONGODB_URI=mongodb+srv://user:pass@cluster.mongodb.net/vdohide
+
+# Ably API key (optional) — realtime publish เมื่อสร้างไฟล์จาก /remote
+# ว่าง = ปิด realtime (no-op). ต้องเป็น key เดียวกับฝั่งเว็บ
+ABLY_API_KEY=xxxx.yyyy:zzzzzzzz
+
+# Remote block (optional) — source ที่ import fail เกิน THRESHOLD ครั้ง
+# → บล็อก BLOCK_HOURS ชม. (cooldown, พ้นแล้วลองใหม่ได้เอง; สำเร็จ = ล้าง)
+REMOTE_FAIL_THRESHOLD=3
+REMOTE_BLOCK_HOURS=24
 ```
 
 ---

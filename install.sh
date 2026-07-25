@@ -15,6 +15,7 @@ NC='\033[0m'
 # ─── Defaults ──────────────────────────────────────────────────────────────────
 PORT="8081"
 MONGODB_URI=""
+ABLY_API_KEY=""      # optional: realtime publish (space events). ว่าง = ปิด realtime
 DOMAINS=()           # multi-domain: --domain api.example.com api2.example.com ...
 INSTALL_APP=false
 INSTALL_NGINX=false
@@ -55,6 +56,10 @@ while [[ $# -gt 0 ]]; do
             MONGODB_URI="$2"
             shift 2
             ;;
+        --ably-api-key)
+            ABLY_API_KEY="$2"
+            shift 2
+            ;;
         -d|--domain)
             # Consume all following non-flag args as domain names
             shift
@@ -79,6 +84,7 @@ while [[ $# -gt 0 ]]; do
             echo "    -p, --port PORT           HTTP port (default: 8081)"
             echo "    -d, --domain D1 D2 ...    One or more domain names for Nginx"
             echo "    --mongodb-uri URI         MongoDB connection string"
+            echo "    --ably-api-key KEY        Ably API key for realtime (optional)"
             echo ""
             echo "  Examples:"
             echo ""
@@ -199,12 +205,19 @@ if [ "$INSTALL_APP" = true ]; then
 
     # ── Write .env ──────────────────────────────────────────────────────────────
     if [ -f "$APP_DIR/.env" ] && [ -z "$MONGODB_URI" ]; then
-        # Update only PORT in existing config
+        # Preserve existing config — update PORT (+ ABLY_API_KEY if provided)
         print_status "Preserving existing .env — updating PORT..."
         if grep -q "^PORT=" "$APP_DIR/.env"; then
             sed -i "s/^PORT=.*/PORT=$PORT/" "$APP_DIR/.env"
         else
             echo "PORT=$PORT" >> "$APP_DIR/.env"
+        fi
+        if [ -n "$ABLY_API_KEY" ]; then
+            if grep -q "^ABLY_API_KEY=" "$APP_DIR/.env"; then
+                sed -i "s|^ABLY_API_KEY=.*|ABLY_API_KEY=$ABLY_API_KEY|" "$APP_DIR/.env"
+            else
+                echo "ABLY_API_KEY=$ABLY_API_KEY" >> "$APP_DIR/.env"
+            fi
         fi
     else
         print_status "Writing .env..."
@@ -212,6 +225,8 @@ if [ "$INSTALL_APP" = true ]; then
 # Server API Configuration
 PORT=$PORT
 MONGODB_URI=$MONGODB_URI
+# Realtime (optional) — ว่าง = ปิด realtime publish
+ABLY_API_KEY=$ABLY_API_KEY
 EOF
         if [ -z "$MONGODB_URI" ]; then
             print_warning "MONGODB_URI is not set — edit $APP_DIR/.env before starting."
