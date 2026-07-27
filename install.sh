@@ -287,8 +287,29 @@ if [ "$INSTALL_NGINX" = true ]; then
         # Build server_name value: "api1.example.com api2.example.com ..."
         SERVER_NAMES="${DOMAINS[*]}"
 
+        # ชื่อตัวแปร nginx ห้ามมี "-" — api-node → api_node
+        CONN_VAR="${APP_NAME//-/_}_conn"
+
         print_status "Configuring Nginx for: $SERVER_NAMES"
         cat > /etc/nginx/sites-available/$APP_NAME <<EOF
+# Connection header ต้องเป็นค่าว่างถึงจะ keepalive ไปยัง upstream ได้
+# แต่ WebSocket ต้องการ "upgrade" — map ให้เลือกตามคำขอแต่ละอัน
+# (ถ้า hardcode 'upgrade' ไว้เฉยๆ keepalive จะไม่ทำงานเลย)
+map \$http_upgrade \$$CONN_VAR {
+    default upgrade;
+    ''      '';
+}
+
+upstream $APP_NAME {
+    server 127.0.0.1:$PORT;
+
+    # คงการเชื่อมต่อไว้ใช้ซ้ำ — ไม่ต้อง TCP handshake ใหม่ทุก request
+    # และไม่ผลาญ ephemeral port จนติด TIME_WAIT ตอนทราฟฟิกสูง
+    keepalive          32;
+    keepalive_timeout  60s;
+    keepalive_requests 1000;
+}
+
 server {
     listen 80;
     server_name $SERVER_NAMES;
@@ -298,10 +319,10 @@ server {
     proxy_request_buffering  off;
 
     location / {
-        proxy_pass         http://127.0.0.1:$PORT;
+        proxy_pass         http://$APP_NAME;
         proxy_http_version 1.1;
         proxy_set_header   Upgrade           \$http_upgrade;
-        proxy_set_header   Connection        'upgrade';
+        proxy_set_header   Connection        \$$CONN_VAR;
         proxy_set_header   Host              \$host;
         proxy_set_header   X-Real-IP         \$remote_addr;
         proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
