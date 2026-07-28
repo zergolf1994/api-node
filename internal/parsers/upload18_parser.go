@@ -1,6 +1,7 @@
 package parsers
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -65,8 +66,9 @@ func (p *Upload18Parser) NormalizeURL(rawURL string) (string, string) {
 var configBlockRe = regexp.MustCompile(`(?s)window\.PLAYER_CONFIG\s*=\s*\{(.*?)\};`)
 
 // fieldRe สร้าง regex ดึงค่า string ของ field ชื่อ name ในบล็อก config
+// key มี quote หรือไม่ก็ได้ ("m3u8":... หรือ m3u8:...) — upload18 เปลี่ยนมาใช้ JSON
 func fieldRe(name string) *regexp.Regexp {
-	return regexp.MustCompile(name + `\s*:\s*"((?:[^"\\]|\\.)*)"`)
+	return regexp.MustCompile(`"?` + name + `"?\s*:\s*"((?:[^"\\]|\\.)*)"`)
 }
 
 var (
@@ -77,11 +79,17 @@ var (
 )
 
 func matchField(re *regexp.Regexp, block string) string {
-	if m := re.FindStringSubmatch(block); len(m) > 1 {
-		// PLAYER_CONFIG หนี slash เป็น \/ — คืนกลับให้ URL ใช้ได้
-		return strings.ReplaceAll(m[1], `\/`, "/")
+	m := re.FindStringSubmatch(block)
+	if len(m) <= 1 {
+		return ""
 	}
-	return ""
+	// ค่าเป็น JSON string body — decode escape ให้ครบ (\/ , & -> & , \" ...)
+	var s string
+	if err := json.Unmarshal([]byte(`"`+m[1]+`"`), &s); err == nil {
+		return s
+	}
+	// เผื่อ decode ไม่ผ่าน อย่างน้อยคืน slash ให้ URL ใช้ได้
+	return strings.ReplaceAll(m[1], `\/`, "/")
 }
 
 // Parse ดึง window.PLAYER_CONFIG จาก HTML แล้วแปลงเป็น metadata กลาง
