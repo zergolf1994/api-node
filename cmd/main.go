@@ -56,6 +56,7 @@ func main() {
 	mux.HandleFunc("/scraper", h.Scraper)
 	mux.HandleFunc("/parsers", h.ListParsers)
 	mux.HandleFunc("/remote", h.Remote)
+	mux.HandleFunc("/file/data", h.FileData) // สำหรับ track-node (FILE_API_URL)
 
 	// Add CORS middleware
 	handler := corsMiddleware(mux)
