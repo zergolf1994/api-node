@@ -85,7 +85,7 @@ func (h *Handler) Scraper(w http.ResponseWriter, r *http.Request) {
 	if parser.NeedsHTML() {
 		// Parser needs HTML — fetch it first, then parse
 		client := scraper.NewHTMLClient()
-		html, fetchErr := client.FetchHTMLWithRetry(normalizedURL, 3)
+		html, fetchErr := client.FetchHTMLWithRetry(r.Context(), normalizedURL, 3)
 		if fetchErr != nil {
 			log.Printf("❌ Fetch error: %v", fetchErr)
 			respondError(w, fmt.Sprintf("Failed to fetch HTML: %v", fetchErr), http.StatusInternalServerError)

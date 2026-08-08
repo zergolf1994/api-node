@@ -257,7 +257,7 @@ type ScrapedData struct {
 }
 
 // scrapeSource uses the parser registry to get metadata for a source URL.
-func (h *Handler) scrapeSource(sourceType, source string) (*ScrapedData, error) {
+func (h *Handler) scrapeSource(ctx context.Context, sourceType, source string) (*ScrapedData, error) {
 	// Build a URL the parser can handle
 	var parserURL string
 	switch sourceType {
@@ -283,7 +283,7 @@ func (h *Handler) scrapeSource(sourceType, source string) (*ScrapedData, error) 
 
 	if parser.NeedsHTML() {
 		client := scraper.NewHTMLClient()
-		html, fetchErr := client.FetchHTMLWithRetry(normalizedURL, 3)
+		html, fetchErr := client.FetchHTMLWithRetry(ctx, normalizedURL, 3)
 		if fetchErr != nil {
 			return nil, fetchErr
 		}
@@ -397,7 +397,7 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 	lock := utils.AcquireProcessingLock("remote:" + spaceID + "|" + support.Type + "|" + support.Source)
 	defer lock.Release()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
 	fileCol := models.FileModel.Col()
@@ -433,7 +433,7 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Scrape URL — ดึง metadata จาก parser
-	scraped, scrapeErr := h.scrapeSource(support.Type, support.Source)
+	scraped, scrapeErr := h.scrapeSource(ctx, support.Type, support.Source)
 	if scrapeErr != nil {
 		log.Printf("⚠️ Scrape failed: %v", scrapeErr)
 		// Don't return error yet — try clone first
@@ -542,7 +542,7 @@ func (h *Handler) Remote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("✅ Created: slug=%s name=%s", newFile.Slug, newFile.Name)
-	clearSourceFailure(ctx, support.Source) // สำเร็จ → ล้าง block เก่า
+	clearSourceFailure(ctx, support.Source)       // สำเร็จ → ล้าง block เก่า
 	publishRemoteFileEvent(spaceID, newFile.Name) // ไฟล์ใหม่ → แจ้ง space
 
 	json.NewEncoder(w).Encode(map[string]interface{}{

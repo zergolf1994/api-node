@@ -1,9 +1,11 @@
 package scraper
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -40,14 +42,18 @@ func findChrome() string {
 }
 
 // FetchHTMLWithBrowser uses headless Chrome via rod + stealth to fetch HTML.
-func FetchHTMLWithBrowser(targetURL string, timeout time.Duration) (*BrowserResult, error) {
+func FetchHTMLWithBrowser(ctx context.Context, targetURL string, timeout time.Duration) (*BrowserResult, error) {
 	log.Printf("🌐 Launching stealth browser for: %s", targetURL)
+
+	browserCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	// Find system Chrome to avoid downloading Chromium
 	chromePath := findChrome()
 
 	// Create launcher — disable leakless to avoid Windows antivirus false positive
 	l := launcher.New().
+		Context(browserCtx).
 		Leakless(false). // Disable leakless (causes antivirus issues on Windows)
 		Headless(true).
 		Set("disable-web-security").
@@ -55,6 +61,8 @@ func FetchHTMLWithBrowser(targetURL string, timeout time.Duration) (*BrowserResu
 		Set("disable-dev-shm-usage").
 		Set("disable-accelerated-2d-canvas").
 		Set("disable-gpu").
+		Set("blink-settings", "imagesEnabled=false").
+		Set("mute-audio").
 		Set("no-sandbox")
 
 	if chromePath != "" {
@@ -67,65 +75,96 @@ func FetchHTMLWithBrowser(targetURL string, timeout time.Duration) (*BrowserResu
 		return nil, fmt.Errorf("failed to launch browser: %w", err)
 	}
 
-	browser := rod.New().ControlURL(u).MustConnect()
-	defer browser.MustClose()
+	browser := rod.New().Context(browserCtx).ControlURL(u)
+	if err := browser.Connect(); err != nil {
+		return nil, fmt.Errorf("failed to connect to browser: %w", err)
+	}
+	defer func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer closeCancel()
+		_ = browser.Context(closeCtx).Close()
+	}()
 
 	// Use stealth mode — patches all common bot detection methods
-	page := stealth.MustPage(browser)
-	defer page.MustClose()
+	page, err := stealth.Page(browser)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stealth page: %w", err)
+	}
+	defer func() { _ = page.Close() }()
 
 	// Set viewport to match the working Puppeteer service
-	page.MustSetViewport(1366, 768, 1.0, false)
+	if err := page.SetViewport(&proto.EmulationSetDeviceMetricsOverride{
+		Width:             1366,
+		Height:            768,
+		DeviceScaleFactor: 1,
+		Mobile:            false,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to set viewport: %w", err)
+	}
 
 	// Set User-Agent
-	page.MustSetUserAgent(&proto.NetworkSetUserAgentOverride{
+	if err := page.SetUserAgent(&proto.NetworkSetUserAgentOverride{
 		UserAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("failed to set user agent: %w", err)
+	}
 
 	// Navigate to URL
 	log.Printf("📡 Navigating to: %s", targetURL)
-	err = page.Timeout(timeout).Navigate(targetURL)
+	err = page.Navigate(targetURL)
 	if err != nil {
 		return nil, fmt.Errorf("navigate failed: %w", err)
 	}
 
-	// Wait for page to load
-	err = page.Timeout(timeout).WaitStable(time.Second)
-	if err != nil {
-		log.Printf("⚠️ WaitStable timeout, continuing: %v", err)
+	// Wait only for window.onload. WaitStable also waits for network and DOM
+	// inactivity, which never occurs on ad/video pages and used to add 60s to
+	// every MissAV request.
+	if err := page.WaitLoad(); err != nil {
+		return nil, fmt.Errorf("wait for page load failed: %w", err)
 	}
 
-	page.Timeout(timeout).MustWaitLoad()
-
 	// Check for Cloudflare challenge
-	title := page.MustEval(`() => document.title`).String()
+	title, err := pageTitle(page)
+	if err != nil {
+		return nil, fmt.Errorf("read page title failed: %w", err)
+	}
 	log.Printf("📄 Page title: %s", title)
 
-	if title == "Just a moment..." {
+	if isCloudflareChallenge(title) {
 		log.Printf("⏳ Cloudflare challenge detected, waiting...")
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
 
-		for i := 0; i < 15; i++ {
-			time.Sleep(2 * time.Second)
-			title = page.MustEval(`() => document.title`).String()
-			log.Printf("⏳ Title check: %s (%ds)", title, (i+1)*2)
-
-			if title != "Just a moment..." {
-				break
+		for isCloudflareChallenge(title) {
+			select {
+			case <-browserCtx.Done():
+				return nil, fmt.Errorf("cloudflare challenge did not resolve: %w", browserCtx.Err())
+			case <-ticker.C:
+				nextTitle, titleErr := pageTitle(page)
+				if titleErr != nil {
+					// Evaluation contexts are briefly destroyed while Cloudflare
+					// redirects from the challenge to the target page. Retry until
+					// the overall browser deadline instead of failing that request.
+					continue
+				}
+				title = nextTitle
 			}
 		}
 
-		if title == "Just a moment..." {
-			return nil, fmt.Errorf("cloudflare challenge did not resolve within 30s")
+		// The challenge normally redirects to the requested page. Wait for that
+		// navigation's load event before collecting the HTML.
+		if err := page.WaitLoad(); err != nil {
+			return nil, fmt.Errorf("wait for post-challenge page load failed: %w", err)
 		}
 	}
 
 	log.Printf("✅ Page loaded: %s", title)
 
-	// Wait for content to fully render
-	time.Sleep(1 * time.Second)
-
 	// Get full HTML content
-	html := page.MustHTML()
+	html, err := page.HTML()
+	if err != nil {
+		return nil, fmt.Errorf("read page HTML failed: %w", err)
+	}
 
 	log.Printf("📦 Browser fetched %d bytes from %s", len(html), targetURL)
 
@@ -133,4 +172,16 @@ func FetchHTMLWithBrowser(targetURL string, timeout time.Duration) (*BrowserResu
 		Content: html,
 		Title:   title,
 	}, nil
+}
+
+func pageTitle(page *rod.Page) (string, error) {
+	result, err := page.Eval(`() => document.title`)
+	if err != nil {
+		return "", err
+	}
+	return result.Value.Str(), nil
+}
+
+func isCloudflareChallenge(title string) bool {
+	return strings.EqualFold(strings.TrimSpace(title), "Just a moment...")
 }

@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -20,6 +21,18 @@ type HTMLClient struct {
 	httpClient *http.Client
 }
 
+// Reuse TCP/TLS connections between scrape requests. A new HTMLClient still
+// gets its own cookie jar, but it does not have to create a new transport and
+// connection pool for every request.
+var sharedHTMLTransport = func() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // Preserve existing scraper behavior.
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 10
+	transport.IdleConnTimeout = 90 * time.Second
+	return transport
+}()
+
 // NewHTMLClient creates a new HTML client
 func NewHTMLClient() *HTMLClient {
 	// Create cookie jar for session handling
@@ -32,18 +45,16 @@ func NewHTMLClient() *HTMLClient {
 
 	return &HTMLClient{
 		httpClient: &http.Client{
-			Timeout: timeout,
-			Jar:     jar,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
+			Timeout:   timeout,
+			Jar:       jar,
+			Transport: sharedHTMLTransport,
 		},
 	}
 }
 
 // FetchHTML fetches HTML content from the given URL
-func (c *HTMLClient) FetchHTML(targetURL string) (string, error) {
-	req, err := http.NewRequest("GET", targetURL, nil)
+func (c *HTMLClient) FetchHTML(ctx context.Context, targetURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -106,12 +117,12 @@ func (c *HTMLClient) FetchHTML(targetURL string) (string, error) {
 
 // FetchHTMLWithRetry fetches HTML with retry logic.
 // If all retries fail with 403, it falls back to headless Chrome.
-func (c *HTMLClient) FetchHTMLWithRetry(targetURL string, maxRetries int) (string, error) {
+func (c *HTMLClient) FetchHTMLWithRetry(ctx context.Context, targetURL string, maxRetries int) (string, error) {
 	var lastErr error
 	got403 := false
 
 	for i := 0; i < maxRetries; i++ {
-		html, err := c.FetchHTML(targetURL)
+		html, err := c.FetchHTML(ctx, targetURL)
 		if err == nil {
 			return html, nil
 		}
@@ -126,15 +137,29 @@ func (c *HTMLClient) FetchHTMLWithRetry(targetURL string, maxRetries int) (strin
 
 		if i < maxRetries-1 {
 			waitTime := time.Duration(1<<uint(i)) * time.Second
-			time.Sleep(waitTime)
+			timer := time.NewTimer(waitTime)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return "", fmt.Errorf("fetch canceled while waiting to retry: %w", ctx.Err())
+			}
 		}
 	}
 
 	// Fallback to headless Chrome if we got 403
 	if got403 {
 		log.Printf("🔄 Got 403, falling back to headless Chrome for: %s", targetURL)
-		browserTimeout := 60 * time.Second
-		result, err := FetchHTMLWithBrowser(targetURL, browserTimeout)
+		browserTimeout := c.httpClient.Timeout
+		if browserTimeout <= 0 {
+			browserTimeout = 30 * time.Second
+		}
+		result, err := FetchHTMLWithBrowser(ctx, targetURL, browserTimeout)
 		if err != nil {
 			return "", fmt.Errorf("browser fallback also failed: %w (original: %v)", err, lastErr)
 		}
